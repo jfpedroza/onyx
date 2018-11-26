@@ -3,7 +3,9 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fmt;
 use std::fs;
+use std::fs::File;
 use std::io::ErrorKind;
+use std::io::Write;
 use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::result::Result as Res;
@@ -286,7 +288,12 @@ pub fn init(file: &PathBuf, name: &Option<String>) -> Result<()> {
         }
     };
 
-    println!("Generated file: {:#?}", project);
+    debug!("Generated file: {:#?}", project);
+    let serialized = serde_yaml::to_string(&project)?;
+    let mut output = File::create(file)?;
+    output.write(serialized.as_bytes())?;
+
+    println!("Project file generated successfully");
 
     Ok(())
 }

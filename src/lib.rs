@@ -28,9 +28,6 @@ pub fn process(args: &CliArgs) -> Result<()> {
             load()?;
             println!("Running...");
         }
-        _ => {
-            println!("Not Running...");
-        }
     }
 
     Ok(())
