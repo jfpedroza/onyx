@@ -41,6 +41,16 @@ pub struct Project {
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub struct ProjectInclude {
+    pub app: Option<Application>,
+
+    pub apps: Option<HashMap<String, Application>>,
+
+    #[serde(default)]
+    pub runner: Runner,
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Language {
     Elixir,
@@ -73,6 +83,12 @@ pub enum Config {
 pub struct Runner {
     pub valid: Vec<RunnerEntry>,
 
+    #[serde(default)]
+    pub default: Vec<RunnerEntry>,
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize, Default)]
+pub struct RunnerInclude {
     #[serde(default)]
     pub default: Vec<RunnerEntry>,
 }
@@ -269,7 +285,7 @@ pub fn init(file: &PathBuf, name: &Option<String>) -> Result<()> {
         let name: String = prompt("Name of the project");
         let description: Option<String> = prompt("Description");
         let umbrella = prompt_default("Umbrella", false);
-        let include_file = prompt_default("Generate and include a onyx.private.yml file?", true);
+        let include_file = prompt_default("Generate and include a onyx.priv.yml file?", true);
 
         Project {
             name,
@@ -278,7 +294,7 @@ pub fn init(file: &PathBuf, name: &Option<String>) -> Result<()> {
             container: ContainerMode::None,
             umbrella,
             include: if include_file {
-                vec![PathBuf::from("onyx.private.yml")]
+                vec![PathBuf::from("onyx.priv.yml")]
             } else {
                 vec![]
             },
