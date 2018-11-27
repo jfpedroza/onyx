@@ -19,8 +19,10 @@ use void::Void;
 pub struct Project {
     pub name: String,
 
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<Language>,
 
     #[serde(default)]
@@ -29,11 +31,16 @@ pub struct Project {
     #[serde(default)]
     pub umbrella: bool,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub include: Vec<PathBuf>,
 
+    #[serde(skip)]
+    pub included: Vec<ProjectInclude>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub app: Option<Application>,
 
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub apps: Option<HashMap<String, Application>>,
 
     #[serde(default)]
@@ -46,8 +53,7 @@ pub struct ProjectInclude {
 
     pub apps: Option<HashMap<String, Application>>,
 
-    #[serde(default)]
-    pub runner: Runner,
+    pub runner: Option<RunnerInclude>,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -71,7 +77,7 @@ pub struct Application {
     config: Option<HashMap<String, Config>>,
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Config {
     Map(HashMap<String, String>),
@@ -89,7 +95,6 @@ pub struct Runner {
 
 #[derive(Debug, PartialEq, Serialize, Deserialize, Default)]
 pub struct RunnerInclude {
-    #[serde(default)]
     pub default: Vec<RunnerEntry>,
 }
 
@@ -113,11 +118,12 @@ impl Project {
     pub fn new(name: &String) -> Self {
         Project {
             name: name.to_string(),
-            description: None,
+            description: Some("An Onyx project".to_string()),
             language: None,
             container: ContainerMode::None,
             umbrella: false,
             include: vec![],
+            included: vec![],
             app: Some(Application { config: None }),
             apps: None,
             runner: Default::default(),
@@ -127,17 +133,32 @@ impl Project {
     pub fn load(path: &PathBuf) -> Result<Self> {
         validate_file(path, "yml")?;
         let content = read_file(path)?;
-        let mut project_settings: Project = serde_yaml::from_str(&content)?;
-        project_settings.validate_and_normalize()?;
+        let mut project: Project = serde_yaml::from_str(&content)?;
+        project.validate_and_normalize()?;
 
-        Ok(project_settings)
+        project.included = project
+            .include
+            .iter()
+            .map(|file| ProjectInclude::load(file))
+            .collect::<Result<_>>()?;
+
+        Ok(project)
     }
 
     fn validate_and_normalize(&mut self) -> Result<()> {
         self.runner.validate_and_normalize()?;
         Ok(())
     }
-    //valid_list.contains(def.long) || valid_list.contains(def.short),
+}
+
+impl ProjectInclude {
+    pub fn load(path: &PathBuf) -> Result<Self> {
+        validate_file(path, "yml")?;
+        let content = read_file(path)?;
+        let include: ProjectInclude = serde_yaml::from_str(&content)?;
+
+        Ok(include)
+    }
 }
 
 impl Default for ContainerMode {
@@ -264,13 +285,13 @@ fn validate_file(path: &PathBuf, extension: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn init(file: &PathBuf, name: &Option<String>) -> Result<()> {
+fn validate_file_not_exists(path: &PathBuf) -> Result<()> {
     use self::ProjectError::*;
 
-    match fs::metadata(file) {
+    match fs::metadata(path) {
         Ok(_) => {
             bail!(ExistingFile {
-                path: file.as_os_str().to_os_string()
+                path: path.as_os_str().to_os_string()
             });
         }
         Err(err) => match err.kind() {
@@ -279,17 +300,23 @@ pub fn init(file: &PathBuf, name: &Option<String>) -> Result<()> {
         },
     }
 
-    let project = if let Some(name) = name {
+    Ok(())
+}
+
+pub fn init(file: &PathBuf, name: &Option<String>) -> Result<()> {
+    validate_file_not_exists(file)?;
+
+    let mut project = if let Some(name) = name {
         Project::new(&name)
     } else {
         let name: String = prompt("Name of the project");
-        let description: Option<String> = prompt("Description");
+        let description = prompt_default("Description", "".to_string());
         let umbrella = prompt_default("Umbrella", false);
         let include_file = prompt_default("Generate and include a onyx.priv.yml file?", true);
 
         Project {
             name,
-            description,
+            description: Some(description),
             language: None,
             container: ContainerMode::None,
             umbrella,
@@ -298,11 +325,34 @@ pub fn init(file: &PathBuf, name: &Option<String>) -> Result<()> {
             } else {
                 vec![]
             },
-            app: Some(Application { config: None }),
-            apps: None,
+            included: vec![],
+            app: Some(Application {
+                config: Some(
+                    [("key".to_string(), Config::Single("XXXX".to_string()))]
+                        .iter()
+                        .cloned()
+                        .collect(),
+                ),
+            }),
+            apps: if umbrella { Some(HashMap::new()) } else { None },
             runner: Default::default(),
         }
     };
+
+    let mut config = HashMap::new();
+    config.insert("key".to_string(), Config::Single("XXXX".to_string()));
+    let db: HashMap<_, _> = [
+        ("host", "localhost"),
+        ("port", "80"),
+        ("user", "user"),
+        ("pass", "secret"),
+        ("db", "db"),
+    ]
+        .iter()
+        .map(|(key, val)| (key.to_string(), val.to_string()))
+        .collect();
+    config.insert("db".to_string(), Config::Map(db));
+    project.app.as_mut().unwrap().config = Some(config);
 
     debug!("Generated file: {:#?}", project);
     let serialized = serde_yaml::to_string(&project)?;
@@ -310,6 +360,32 @@ pub fn init(file: &PathBuf, name: &Option<String>) -> Result<()> {
     output.write(serialized.as_bytes())?;
 
     println!("Project file generated successfully");
+
+    if project.include.len() > 0 {
+        for file in &project.include {
+            validate_file_not_exists(file)?;
+            let mut included = ProjectInclude {
+                app: Some(Application {
+                    config: {
+                        let mut db = HashMap::new();
+                        db.insert("port".to_string(), "8080".to_string());
+                        let mut config = HashMap::new();
+                        config.insert("db".to_string(), Config::Map(db));
+                        Some(config)
+                    },
+                }),
+                apps: None,
+                runner: None,
+            };
+
+            debug!("Generated include file: {:#?}", included);
+            let serialized = serde_yaml::to_string(&included)?;
+            let mut output = File::create(file)?;
+            output.write(serialized.as_bytes())?;
+        }
+
+        println!("Include files generated successfully");
+    }
 
     Ok(())
 }
