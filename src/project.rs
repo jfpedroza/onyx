@@ -35,7 +35,7 @@ pub struct Project {
     pub include: Vec<PathBuf>,
 
     #[serde(skip)]
-    pub included: Vec<ProjectInclude>,
+    pub included: Option<Vec<ProjectInclude>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app: Option<Application>,
@@ -56,13 +56,13 @@ pub struct ProjectInclude {
     pub runner: Option<RunnerInclude>,
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Language {
     Elixir,
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ContainerMode {
     None,
@@ -80,7 +80,7 @@ pub struct Application {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Config {
-    Map(HashMap<String, String>),
+    Map(HashMap<String, StrOrNum>),
 
     Single(String),
 }
@@ -105,6 +105,9 @@ pub struct RunnerEntry {
     pub short: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct StrOrNum(String);
+
 #[derive(Debug, Fail)]
 enum ProjectError {
     #[fail(display = "Unsupported file format: {:?}", ext)]
@@ -123,7 +126,7 @@ impl Project {
             container: ContainerMode::None,
             umbrella: false,
             include: vec![],
-            included: vec![],
+            included: None,
             app: Some(Application { config: None }),
             apps: None,
             runner: Default::default(),
@@ -136,11 +139,13 @@ impl Project {
         let mut project: Project = serde_yaml::from_str(&content)?;
         project.validate_and_normalize()?;
 
-        project.included = project
-            .include
-            .iter()
-            .map(|file| ProjectInclude::load(file))
-            .collect::<Result<_>>()?;
+        project.included = Some(
+            project
+                .include
+                .iter()
+                .map(|file| ProjectInclude::load(file))
+                .collect::<Result<_>>()?,
+        );
 
         Ok(project)
     }
@@ -148,6 +153,21 @@ impl Project {
     fn validate_and_normalize(&mut self) -> Result<()> {
         self.runner.validate_and_normalize()?;
         Ok(())
+    }
+
+    pub fn merge(&self) -> Result<Self> {
+        Ok(Project {
+            name: self.name.clone(),
+            description: self.description.clone(),
+            language: self.language,
+            container: self.container,
+            umbrella: self.umbrella,
+            include: vec![],
+            included: None,
+            app: None,
+            apps: None,
+            runner: Default::default(),
+        })
     }
 }
 
@@ -262,6 +282,70 @@ impl<'de> Deserialize<'de> for RunnerEntry {
     }
 }
 
+impl FromStr for StrOrNum {
+    // This implementation of `from_str` can never fail, so use the impossible
+    // `Void` type as the error type.
+    type Err = Void;
+
+    fn from_str(s: &str) -> Res<Self, Self::Err> {
+        Ok(StrOrNum(s.to_string()))
+    }
+}
+
+impl<'de> Deserialize<'de> for StrOrNum {
+    fn deserialize<D>(deserializer: D) -> Res<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct StrOrNumVisitor;
+
+        impl<'de> Visitor<'de> for StrOrNumVisitor {
+            type Value = StrOrNum;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("string or number")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Res<StrOrNum, E>
+            where
+                E: de::Error,
+            {
+                Ok(StrOrNum(value.to_string()))
+            }
+
+            fn visit_i32<E>(self, value: i32) -> Res<StrOrNum, E>
+            where
+                E: de::Error,
+            {
+                Ok(StrOrNum(value.to_string()))
+            }
+
+            fn visit_i64<E>(self, value: i64) -> Res<StrOrNum, E>
+            where
+                E: de::Error,
+            {
+                Ok(StrOrNum(value.to_string()))
+            }
+
+            fn visit_f32<E>(self, value: f32) -> Res<StrOrNum, E>
+            where
+                E: de::Error,
+            {
+                Ok(StrOrNum(value.to_string()))
+            }
+
+            fn visit_f64<E>(self, value: f64) -> Res<StrOrNum, E>
+            where
+                E: de::Error,
+            {
+                Ok(StrOrNum(value.to_string()))
+            }
+        }
+
+        deserializer.deserialize_any(StrOrNumVisitor)
+    }
+}
+
 fn validate_file(path: &PathBuf, extension: &str) -> Result<()> {
     use self::ProjectError::*;
 
@@ -325,7 +409,7 @@ pub fn init(file: &PathBuf, name: &Option<String>) -> Result<()> {
             } else {
                 vec![]
             },
-            included: vec![],
+            included: None,
             app: Some(Application {
                 config: Some(
                     [("key".to_string(), Config::Single("XXXX".to_string()))]

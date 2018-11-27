@@ -17,6 +17,8 @@ pub fn process(args: &CliArgs) -> Result<()> {
     let load = || -> Result<Project> {
         let project = Project::load(&args.project_file)?;
         debug!("Project: {:#?}", &project);
+        let merged = project.merge()?;
+        debug!("Merged: {:#?}", &merged);
         Ok(project)
     };
 
