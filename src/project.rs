@@ -56,7 +56,8 @@ pub struct ProjectInclude {
 
     pub apps: Option<HashMap<String, Application>>,
 
-    pub runner: Option<RunnerInclude>,
+    #[serde(default)]
+    pub runner: RunnerInclude,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
@@ -105,7 +106,7 @@ pub struct RunnerInclude {
     pub default: Vec<RunnerEntry>,
 }
 
-#[derive(Debug, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RunnerEntry {
     pub long: String,
 
@@ -206,7 +207,16 @@ impl Project {
 
                 apps
             },
-            runner: Default::default(),
+            runner: {
+                let mut runner = Runner {
+                    valid: self.runner.valid.clone(),
+                    default: vec![],
+                };
+
+                runner.validate_and_normalize()?;
+
+                runner
+            },
         })
     }
 }
@@ -587,7 +597,7 @@ pub fn init(file: &PathBuf, name: &Option<String>) -> Result<()> {
                     },
                 },
                 apps: None,
-                runner: None,
+                runner: Default::default(),
             };
 
             debug!("Generated include file: {:#?}", included);
