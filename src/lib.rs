@@ -19,7 +19,7 @@ pub fn process(args: &CliArgs) -> Result<()> {
         debug!("Project: {:#?}", &project);
         let merged = project.merge()?;
         debug!("Merged: {:#?}", &merged);
-        Ok(project)
+        Ok(merged)
     };
 
     match args.cmd {

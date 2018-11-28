@@ -1,5 +1,6 @@
 use quicli::prelude::*;
 use std::collections::HashMap;
+use std::convert::From;
 use std::ffi::OsString;
 use std::fmt;
 use std::fs;
@@ -13,6 +14,7 @@ use std::str::FromStr;
 
 use promptly::{prompt, prompt_default};
 use serde::de::{self, Deserialize, Deserializer, MapAccess, Visitor};
+use serde::ser::{Serialize, Serializer};
 use void::Void;
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -37,8 +39,8 @@ pub struct Project {
     #[serde(skip)]
     pub included: Option<Vec<ProjectInclude>>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub app: Option<Application>,
+    #[serde(default, skip_serializing_if = "Application::omit_ser")]
+    pub app: Application,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub apps: Option<HashMap<String, Application>>,
@@ -49,7 +51,8 @@ pub struct Project {
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct ProjectInclude {
-    pub app: Option<Application>,
+    #[serde(default)]
+    pub app: Application,
 
     pub apps: Option<HashMap<String, Application>>,
 
@@ -72,18 +75,22 @@ pub enum ContainerMode {
     DockerCompose,
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Application {
+    #[serde(skip_serializing_if = "Option::is_none")]
     config: Option<HashMap<String, Config>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Config {
-    Map(HashMap<String, StrOrNum>),
+    Map(HashMap<String, ConfigValue>),
 
-    Single(String),
+    Single(ConfigValue),
 }
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConfigValue(String);
 
 #[derive(Debug, PartialEq, Serialize, Deserialize, Default)]
 pub struct Runner {
@@ -105,9 +112,6 @@ pub struct RunnerEntry {
     pub short: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct StrOrNum(String);
-
 #[derive(Debug, Fail)]
 enum ProjectError {
     #[fail(display = "Unsupported file format: {:?}", ext)]
@@ -115,6 +119,12 @@ enum ProjectError {
 
     #[fail(display = "The file {:?} already exists", path)]
     ExistingFile { path: OsString },
+
+    #[fail(
+        display = "Incompatible config value types (found string and map). Key: {}",
+        key
+    )]
+    IncompatibleConfigType { key: String },
 }
 
 impl Project {
@@ -127,7 +137,7 @@ impl Project {
             umbrella: false,
             include: vec![],
             included: None,
-            app: Some(Application { config: None }),
+            app: Default::default(),
             apps: None,
             runner: Default::default(),
         }
@@ -164,8 +174,38 @@ impl Project {
             umbrella: self.umbrella,
             include: vec![],
             included: None,
-            app: None,
-            apps: None,
+            app: {
+                let mut merged = self.app.clone();
+                if let Some(ref included) = self.included {
+                    for inc in included {
+                        merged.merge(&inc.app)?;
+                    }
+                }
+
+                merged
+            },
+            apps: {
+                let mut apps = self.apps.clone();
+                if let Some(ref included) = self.included {
+                    for inc in included {
+                        if let Some(ref mut apps) = apps {
+                            if let Some(ref inc_apps) = inc.apps {
+                                for (name, app) in inc_apps {
+                                    if apps.contains_key(name) {
+                                        apps.get_mut(name).unwrap().merge(app)?;
+                                    } else {
+                                        apps.insert(name.to_string(), app.clone());
+                                    }
+                                }
+                            }
+                        } else {
+                            apps = inc.apps.clone();
+                        }
+                    }
+                }
+
+                apps
+            },
             runner: Default::default(),
         })
     }
@@ -184,6 +224,158 @@ impl ProjectInclude {
 impl Default for ContainerMode {
     fn default() -> Self {
         ContainerMode::None
+    }
+}
+
+impl Application {
+    fn omit_ser(&self) -> bool {
+        self.config.is_none()
+    }
+
+    fn merge(&mut self, other: &Application) -> Result<()> {
+        self.config = {
+            let mut merged = self.config.clone();
+
+            if let Some(ref config) = other.config {
+                if let Some(ref mut m) = merged {
+                    for (key, val) in config {
+                        if m.contains_key(key) {
+                            let mut m_val = m[key].clone();
+                            m_val.merge(val, key)?;
+                            m.insert(key.to_string(), m_val);
+                        } else {
+                            m.insert(key.to_string(), val.clone());
+                        }
+                    }
+                } else {
+                    merged = Some(config.clone());
+                }
+            }
+
+            merged
+        };
+        Ok(())
+    }
+}
+
+impl Config {
+    fn merge(&mut self, other: &Config, key: &str) -> Result<()> {
+        use self::ProjectError::IncompatibleConfigType;
+        use Config::*;
+
+        let merged;
+
+        match other {
+            Map(other) => match self {
+                Map(map) => {
+                    for (key, val) in other {
+                        map.insert(key.to_string(), val.clone());
+                    }
+
+                    merged = Map(map.clone());
+                }
+                Single(_) => bail!(IncompatibleConfigType {
+                    key: key.to_string()
+                }),
+            },
+            Single(other) => match self {
+                Map(_) => bail!(IncompatibleConfigType {
+                    key: key.to_string()
+                }),
+                Single(_) => {
+                    merged = Single(other.clone());
+                }
+            },
+        }
+
+        *self = merged;
+
+        Ok(())
+    }
+}
+
+impl FromStr for ConfigValue {
+    // This implementation of `from_str` can never fail, so use the impossible
+    // `Void` type as the error type.
+    type Err = Void;
+
+    fn from_str(s: &str) -> Res<Self, Self::Err> {
+        Ok(ConfigValue(s.to_string()))
+    }
+}
+
+impl<T: AsRef<str>> From<T> for ConfigValue {
+    fn from(t: T) -> Self {
+        ConfigValue(t.as_ref().to_string())
+    }
+}
+
+macro_rules! implement_str_or_num_from {
+    ($func: ident, $t:ty) => {
+
+        fn $func<E>(self, value: $t) -> Res<ConfigValue, E>
+        where
+            E: de::Error,
+        {
+            Ok(ConfigValue(value.to_string()))
+        }
+    };
+}
+
+impl<'de> Deserialize<'de> for ConfigValue {
+    fn deserialize<D>(deserializer: D) -> Res<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct ConfigValueVisitor;
+
+        impl<'de> Visitor<'de> for ConfigValueVisitor {
+            type Value = ConfigValue;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("string or number")
+            }
+
+            implement_str_or_num_from!(visit_str, &str);
+            implement_str_or_num_from!(visit_i8, i8);
+            implement_str_or_num_from!(visit_i16, i16);
+            implement_str_or_num_from!(visit_i32, i32);
+            implement_str_or_num_from!(visit_i64, i64);
+            implement_str_or_num_from!(visit_u8, u8);
+            implement_str_or_num_from!(visit_u16, u16);
+            implement_str_or_num_from!(visit_u32, u32);
+            implement_str_or_num_from!(visit_u64, u64);
+            implement_str_or_num_from!(visit_f32, f32);
+            implement_str_or_num_from!(visit_f64, f64);
+            implement_str_or_num_from!(visit_bool, bool);
+        }
+
+        deserializer.deserialize_any(ConfigValueVisitor)
+    }
+}
+
+impl Serialize for ConfigValue {
+    fn serialize<S>(&self, serializer: S) -> Res<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        if let Ok(int) = self.0.parse() {
+            return serializer.serialize_u64(int);
+        }
+
+        if let Ok(int) = self.0.parse() {
+            return serializer.serialize_i64(int);
+        }
+
+        if let Ok(float) = self.0.parse() {
+            return serializer.serialize_f64(float);
+        }
+
+        if let Ok(boolean) = self.0.parse() {
+            return serializer.serialize_bool(boolean);
+        }
+
+        serializer.serialize_str(&self.0)
     }
 }
 
@@ -282,70 +474,6 @@ impl<'de> Deserialize<'de> for RunnerEntry {
     }
 }
 
-impl FromStr for StrOrNum {
-    // This implementation of `from_str` can never fail, so use the impossible
-    // `Void` type as the error type.
-    type Err = Void;
-
-    fn from_str(s: &str) -> Res<Self, Self::Err> {
-        Ok(StrOrNum(s.to_string()))
-    }
-}
-
-impl<'de> Deserialize<'de> for StrOrNum {
-    fn deserialize<D>(deserializer: D) -> Res<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        struct StrOrNumVisitor;
-
-        impl<'de> Visitor<'de> for StrOrNumVisitor {
-            type Value = StrOrNum;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("string or number")
-            }
-
-            fn visit_str<E>(self, value: &str) -> Res<StrOrNum, E>
-            where
-                E: de::Error,
-            {
-                Ok(StrOrNum(value.to_string()))
-            }
-
-            fn visit_i32<E>(self, value: i32) -> Res<StrOrNum, E>
-            where
-                E: de::Error,
-            {
-                Ok(StrOrNum(value.to_string()))
-            }
-
-            fn visit_i64<E>(self, value: i64) -> Res<StrOrNum, E>
-            where
-                E: de::Error,
-            {
-                Ok(StrOrNum(value.to_string()))
-            }
-
-            fn visit_f32<E>(self, value: f32) -> Res<StrOrNum, E>
-            where
-                E: de::Error,
-            {
-                Ok(StrOrNum(value.to_string()))
-            }
-
-            fn visit_f64<E>(self, value: f64) -> Res<StrOrNum, E>
-            where
-                E: de::Error,
-            {
-                Ok(StrOrNum(value.to_string()))
-            }
-        }
-
-        deserializer.deserialize_any(StrOrNumVisitor)
-    }
-}
-
 fn validate_file(path: &PathBuf, extension: &str) -> Result<()> {
     use self::ProjectError::*;
 
@@ -410,21 +538,21 @@ pub fn init(file: &PathBuf, name: &Option<String>) -> Result<()> {
                 vec![]
             },
             included: None,
-            app: Some(Application {
+            app: Application {
                 config: Some(
-                    [("key".to_string(), Config::Single("XXXX".to_string()))]
+                    [("key".to_string(), Config::Single("XXXX".into()))]
                         .iter()
                         .cloned()
                         .collect(),
                 ),
-            }),
+            },
             apps: if umbrella { Some(HashMap::new()) } else { None },
             runner: Default::default(),
         }
     };
 
     let mut config = HashMap::new();
-    config.insert("key".to_string(), Config::Single("XXXX".to_string()));
+    config.insert("key".to_string(), Config::Single("XXXX".into()));
     let db: HashMap<_, _> = [
         ("host", "localhost"),
         ("port", "80"),
@@ -433,10 +561,10 @@ pub fn init(file: &PathBuf, name: &Option<String>) -> Result<()> {
         ("db", "db"),
     ]
         .iter()
-        .map(|(key, val)| (key.to_string(), val.to_string()))
+        .map(|(key, val)| (key.to_string(), val.into()))
         .collect();
     config.insert("db".to_string(), Config::Map(db));
-    project.app.as_mut().unwrap().config = Some(config);
+    project.app.config = Some(config);
 
     debug!("Generated file: {:#?}", project);
     let serialized = serde_yaml::to_string(&project)?;
@@ -449,15 +577,15 @@ pub fn init(file: &PathBuf, name: &Option<String>) -> Result<()> {
         for file in &project.include {
             validate_file_not_exists(file)?;
             let mut included = ProjectInclude {
-                app: Some(Application {
+                app: Application {
                     config: {
                         let mut db = HashMap::new();
-                        db.insert("port".to_string(), "8080".to_string());
+                        db.insert("port".to_string(), "8080".into());
                         let mut config = HashMap::new();
                         config.insert("db".to_string(), Config::Map(db));
                         Some(config)
                     },
-                }),
+                },
                 apps: None,
                 runner: None,
             };
