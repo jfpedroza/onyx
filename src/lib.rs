@@ -29,7 +29,14 @@ pub fn process(args: &CliArgs) -> Result<()> {
         CliCommand::Run { ref entries } => {
             let project = load()?;
             let to_run = project.runner.entries_to_run(entries)?;
-            debug!("To run {:?}", to_run);
+            println!(
+                "{}",
+                to_run
+                    .iter()
+                    .map(|entry| format!("RUN_{}=true", entry.to_uppercase()))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
         }
     }
 

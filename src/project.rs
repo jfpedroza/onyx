@@ -419,24 +419,28 @@ impl Serialize for ConfigValue {
 
 impl Runner {
     fn validate_and_normalize(&mut self) -> Result<()> {
-        for def in &self.default {
-            self.validate_entry(def)?;
-        }
+        self.default = self
+            .default
+            .iter()
+            .map(|def| self.validate_entry(def).map(|entry| entry.clone()))
+            .collect::<Result<Vec<_>>>()?;
 
         Ok(())
     }
 
-    fn validate_entry(&self, entry: &RunnerEntry) -> Result<()> {
+    fn validate_entry(&self, entry: &RunnerEntry) -> Result<&RunnerEntry> {
+        let valid = self.valid.iter().find(|RunnerEntry { long, short }| {
+            entry.long.to_lowercase() == *long.to_lowercase()
+                || entry.short.to_lowercase() == *short.to_lowercase()
+        });
+
         ensure!(
-            self.valid
-                .iter()
-                .find(|RunnerEntry { long, short }| entry.long == *long || entry.short == *short)
-                .is_some(),
+            valid.is_some(),
             "Invalid default runner entry: {}",
             entry.long
         );
 
-        Ok(())
+        Ok(valid.unwrap())
     }
 
     pub fn entries_to_run(&self, args: &[String]) -> Result<Vec<String>> {
@@ -444,14 +448,11 @@ impl Runner {
             .iter()
             .map(|arg| {
                 let item = if arg.starts_with("+") {
-                    let entry = arg[1..].into();
-                    ('+', self.validate_entry(&entry).map(|()| entry))
+                    ('+', self.validate_entry(&arg[1..].into()))
                 } else if arg.starts_with("-") {
-                    let entry = arg[1..].into();
-                    ('-', self.validate_entry(&entry).map(|()| entry))
+                    ('-', self.validate_entry(&arg[1..].into()))
                 } else {
-                    let entry = arg[..].into();
-                    ('+', self.validate_entry(&entry).map(|()| entry))
+                    ('+', self.validate_entry(&arg[..].into()))
                 };
 
                 match item {
@@ -460,22 +461,23 @@ impl Runner {
                 }
             }).collect::<Result<Vec<_>>>()?;
 
-        let to_add = processed
+        let to_add: Vec<_> = processed
             .iter()
             .filter(|item| item.0 == '+')
-            .map(|(_, arg)| arg);
+            .map(|(_, arg)| (*arg).clone())
+            .collect();
 
         let to_remove: Vec<_> = processed
             .iter()
             .filter(|item| item.0 == '-')
-            .map(|(_, arg)| arg)
+            .map(|(_, arg)| *arg)
             .collect();
 
         Ok(self
             .default
             .iter()
-            .chain(to_add)
-            .filter(|arg| !to_remove.contains(arg))
+            .chain(to_add.iter())
+            .filter(|arg| !to_remove.contains(&arg))
             .map(|arg| arg.long.clone())
             .collect())
     }
