@@ -64,6 +64,7 @@ pub struct ProjectInclude {
 #[serde(rename_all = "camelCase")]
 pub enum Language {
     Elixir,
+    Rust,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]

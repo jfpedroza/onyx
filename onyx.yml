@@ -1,0 +1,24 @@
+---
+name: onyx
+description: Command line tool for managing multiple kind of projects
+language: rust
+container: none
+umbrella: false
+include:
+  - onyx.priv.yml
+app:
+  config:
+    key: XXXX
+    db:
+      db: db
+      user: user
+      host: localhost
+      port: 80
+      pass: secret
+commands:
+  build: cargo build
+  run: cargo run
+
+runner:
+  valid: []
+  default: []

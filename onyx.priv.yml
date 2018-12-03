@@ -1,0 +1,6 @@
+# Should be ignored by git
+app:
+  config:
+    db:
+      port: 8080
+apps: ~
