@@ -38,6 +38,15 @@ pub fn process(args: &CliArgs) -> Result<()> {
                     .join(" ")
             );
         }
+        CliCommand::Config {
+            ref app,
+            ref key,
+            ref sub_key,
+        } => {
+            let project = load()?;
+            let result = project.get_config(app, key, sub_key)?;
+            println!("Result: {}", result);
+        }
     }
 
     Ok(())

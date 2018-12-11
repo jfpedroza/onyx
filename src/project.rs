@@ -114,6 +114,12 @@ pub struct RunnerEntry {
     pub short: String,
 }
 
+pub enum ConfigSearch {
+    Single(Config),
+
+    Multiple(HashMap<String, Config>),
+}
+
 #[derive(Debug, Fail)]
 enum ProjectError {
     #[fail(display = "Unsupported file format: {:?}", ext)]
@@ -243,6 +249,15 @@ impl Project {
                 runner
             },
         })
+    }
+
+    pub fn get_config(
+        &self,
+        _app: &Option<String>,
+        _key: &String,
+        _sub_key: &Option<String>,
+    ) -> Result<ConfigSearch> {
+        Ok(ConfigSearch::Single(Config::Single(ConfigValue::from(""))))
     }
 }
 
@@ -460,7 +475,8 @@ impl Runner {
                     (sign, Ok(arg)) => Ok((sign, arg)),
                     (_sign, Err(error)) => Err(error),
                 }
-            }).collect::<Result<Vec<_>>>()?;
+            })
+            .collect::<Result<Vec<_>>>()?;
 
         let to_add: Vec<_> = processed
             .iter()
@@ -657,9 +673,9 @@ pub fn init(file: &PathBuf, name: &Option<String>) -> Result<()> {
         ("pass", "secret"),
         ("db", "db"),
     ]
-        .iter()
-        .map(|(key, val)| (key.to_string(), val.into()))
-        .collect();
+    .iter()
+    .map(|(key, val)| (key.to_string(), val.into()))
+    .collect();
     config.insert("db".to_string(), Config::Map(db));
     project.app.config = Some(config);
 
@@ -697,4 +713,10 @@ pub fn init(file: &PathBuf, name: &Option<String>) -> Result<()> {
     }
 
     Ok(())
+}
+
+impl fmt::Display for ConfigSearch {
+    fn fmt(&self, f: &mut fmt::Formatter) -> Res<(), fmt::Error> {
+        f.write_str("example")
+    }
 }

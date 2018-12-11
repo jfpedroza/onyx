@@ -26,14 +26,30 @@ pub struct CliArgs {
 
 #[derive(Debug, StructOpt)]
 pub enum CliCommand {
-    /// Initialize an existing project with Onyx by creating an onyx.yml file
+    /// Initializes an existing project with Onyx by creating an onyx.yml file
     #[structopt(name = "init")]
     Init {
         /// Name of the project. If passed, the file will be generated without prompting anything
         name: Option<String>,
     },
 
-    /// Run the project
+    /// Runs the project
     #[structopt(name = "run")]
     Run { entries: Vec<String> },
+
+    /// Reads configuration entries and prints them
+    #[structopt(name = "config")]
+    Config {
+        /// Application to read config from. Ingored if umbrella = false
+        /// If not provided, all apps will be taken into a account and `app: value` pairs will be returned
+        #[structopt(short = "a", long = "app")]
+        app: Option<String>,
+
+        /// The key to search
+        key: String,
+
+        #[structopt(name = "sub-key")]
+        /// The subkey to search. Raises error if `key` doesn't contain key-value pairs
+        sub_key: Option<String>,
+    },
 }
