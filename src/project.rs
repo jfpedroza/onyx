@@ -49,13 +49,14 @@ pub struct Project {
     pub runner: Runner,
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectInclude {
     #[serde(default)]
     pub app: Application,
 
     pub apps: Option<HashMap<String, Application>>,
 
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub runner: Option<RunnerInclude>,
 }
 
@@ -63,6 +64,7 @@ pub struct ProjectInclude {
 #[serde(rename_all = "camelCase")]
 pub enum Language {
     Elixir,
+    Rust,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
@@ -100,12 +102,12 @@ pub struct Runner {
     pub default: Vec<RunnerEntry>,
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct RunnerInclude {
     pub default: Vec<RunnerEntry>,
 }
 
-#[derive(Debug, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RunnerEntry {
     pub long: String,
 
@@ -125,10 +127,16 @@ enum ProjectError {
         key
     )]
     IncompatibleConfigType { key: String },
+
+    #[fail(display = "Error while parsing file {:?}: {}", path, error)]
+    FileParseError {
+        path: PathBuf,
+        error: serde_yaml::Error,
+    },
 }
 
 impl Project {
-    pub fn new(name: &String) -> Self {
+    pub fn new(name: &str) -> Self {
         Project {
             name: name.to_string(),
             description: Some("An Onyx project".to_string()),
@@ -146,7 +154,11 @@ impl Project {
     pub fn load(path: &PathBuf) -> Result<Self> {
         validate_file(path, "yml")?;
         let content = read_file(path)?;
-        let mut project: Project = serde_yaml::from_str(&content)?;
+        let mut project: Project =
+            serde_yaml::from_str(&content).map_err(|err| ProjectError::FileParseError {
+                path: path.clone(),
+                error: err,
+            })?;
         project.validate_and_normalize()?;
 
         project.included = Some(
@@ -206,7 +218,30 @@ impl Project {
 
                 apps
             },
-            runner: Default::default(),
+            runner: {
+                let mut runner = Runner {
+                    valid: self.runner.valid.clone(),
+                    default: {
+                        if let Some(ref included) = self.included {
+                            let mut reversed = included.clone();
+                            reversed.reverse();
+
+                            let last = reversed.iter().find(|inc| inc.runner.is_some());
+                            if let Some(ref last) = last {
+                                last.runner.as_ref().unwrap().default.clone()
+                            } else {
+                                self.runner.default.clone()
+                            }
+                        } else {
+                            self.runner.default.clone()
+                        }
+                    },
+                };
+
+                runner.validate_and_normalize()?;
+
+                runner
+            },
         })
     }
 }
@@ -215,7 +250,11 @@ impl ProjectInclude {
     pub fn load(path: &PathBuf) -> Result<Self> {
         validate_file(path, "yml")?;
         let content = read_file(path)?;
-        let include: ProjectInclude = serde_yaml::from_str(&content)?;
+        let include: ProjectInclude =
+            serde_yaml::from_str(&content).map_err(|err| ProjectError::FileParseError {
+                path: path.clone(),
+                error: err,
+            })?;
 
         Ok(include)
     }
@@ -381,18 +420,67 @@ impl Serialize for ConfigValue {
 
 impl Runner {
     fn validate_and_normalize(&mut self) -> Result<()> {
-        for def in &self.default {
-            ensure!(
-                self.valid
-                    .iter()
-                    .find(|RunnerEntry { long, short }| def.long == *long || def.short == *short)
-                    .is_some(),
-                "Invalid default runner entry: {}",
-                def.long
-            );
-        }
+        self.default = self
+            .default
+            .iter()
+            .map(|def| self.validate_entry(def).map(|entry| entry.clone()))
+            .collect::<Result<Vec<_>>>()?;
 
         Ok(())
+    }
+
+    fn validate_entry(&self, entry: &RunnerEntry) -> Result<&RunnerEntry> {
+        let valid = self.valid.iter().find(|RunnerEntry { long, short }| {
+            entry.long.to_lowercase() == *long.to_lowercase()
+                || entry.short.to_lowercase() == *short.to_lowercase()
+        });
+
+        ensure!(
+            valid.is_some(),
+            "Invalid default runner entry: {}",
+            entry.long
+        );
+
+        Ok(valid.unwrap())
+    }
+
+    pub fn entries_to_run(&self, args: &[String]) -> Result<Vec<String>> {
+        let processed = args
+            .iter()
+            .map(|arg| {
+                let item = if arg.starts_with("+") {
+                    ('+', self.validate_entry(&arg[1..].into()))
+                } else if arg.starts_with("-") {
+                    ('-', self.validate_entry(&arg[1..].into()))
+                } else {
+                    ('+', self.validate_entry(&arg[..].into()))
+                };
+
+                match item {
+                    (sign, Ok(arg)) => Ok((sign, arg)),
+                    (_sign, Err(error)) => Err(error),
+                }
+            }).collect::<Result<Vec<_>>>()?;
+
+        let to_add: Vec<_> = processed
+            .iter()
+            .filter(|item| item.0 == '+')
+            .map(|(_, arg)| (*arg).clone())
+            .collect();
+
+        let to_remove: Vec<_> = processed
+            .iter()
+            .filter(|item| item.0 == '-')
+            .map(|(_, arg)| *arg)
+            .collect();
+
+        Ok(self
+            .default
+            .iter()
+            .chain(to_add.iter())
+            .filter(|arg| !to_remove.contains(&arg))
+            .map(|arg| arg.long.clone())
+            .collect())
     }
 }
 
@@ -406,6 +494,15 @@ impl FromStr for RunnerEntry {
             long: s.to_string(),
             short: s.to_string(),
         })
+    }
+}
+
+impl<T: AsRef<str>> From<T> for RunnerEntry {
+    fn from(t: T) -> Self {
+        RunnerEntry {
+            long: t.as_ref().to_string(),
+            short: t.as_ref().to_string(),
+        }
     }
 }
 
@@ -587,7 +684,7 @@ pub fn init(file: &PathBuf, name: &Option<String>) -> Result<()> {
                     },
                 },
                 apps: None,
-                runner: None,
+                runner: Default::default(),
             };
 
             debug!("Generated include file: {:#?}", included);

@@ -26,9 +26,17 @@ pub fn process(args: &CliArgs) -> Result<()> {
         CliCommand::Init { ref name } => {
             init(&args.project_file, &name)?;
         }
-        CliCommand::Run { .. } => {
-            load()?;
-            println!("Running...");
+        CliCommand::Run { ref entries } => {
+            let project = load()?;
+            let to_run = project.runner.entries_to_run(entries)?;
+            println!(
+                "{}",
+                to_run
+                    .iter()
+                    .map(|entry| format!("RUN_{}=true", entry.to_uppercase()))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
         }
     }
 
