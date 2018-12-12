@@ -41,7 +41,7 @@ pub enum CliCommand {
     #[structopt(name = "config")]
     Config {
         /// Application to read config from. Ingored if umbrella = false
-        /// If not provided, all apps will be taken into a account and `app: value` pairs will be returned
+        /// If not provided, configuration under `apps` won't be taken into account
         #[structopt(short = "a", long = "app")]
         app: Option<String>,
 

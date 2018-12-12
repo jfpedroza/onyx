@@ -114,12 +114,6 @@ pub struct RunnerEntry {
     pub short: String,
 }
 
-pub enum ConfigSearch {
-    Single(Config),
-
-    Multiple(HashMap<String, Config>),
-}
-
 #[derive(Debug, Fail)]
 enum ProjectError {
     #[fail(display = "Unsupported file format: {:?}", ext)]
@@ -139,6 +133,18 @@ enum ProjectError {
         path: PathBuf,
         error: serde_yaml::Error,
     },
+
+    #[fail(display = "Config key '{}' not found", key)]
+    ConfigKeyNotFound {
+        key: String
+    },
+
+    #[fail(display = "Config key/sub_key '{}, {}' not found", key, sub_key)]
+    ConfigKeySubKeyNotFound {
+        key: String,
+
+        sub_key: String,
+    }
 }
 
 impl Project {
@@ -253,11 +259,18 @@ impl Project {
 
     pub fn get_config(
         &self,
-        _app: &Option<String>,
-        _key: &String,
-        _sub_key: &Option<String>,
-    ) -> Result<ConfigSearch> {
-        Ok(ConfigSearch::Single(Config::Single(ConfigValue::from(""))))
+        app: &Option<String>,
+        key: &String,
+        sub_key: &Option<String>,
+    ) -> Result<Config> {
+        if app.is_some() && self.umbrella {
+            Ok(Config::Single(ConfigValue::from("")))
+        } else {
+            match self.app.get(key, sub_key)? {
+                Some(config) => Ok(config),
+                None => bail!("")
+            }
+        }
     }
 }
 
@@ -310,6 +323,25 @@ impl Application {
         };
         Ok(())
     }
+
+    fn get(&self, key: &str, sub_key: &Option<String>) -> Result<Option<Config>> {
+        Ok(None)
+    }
+}
+
+impl fmt::Display for Config {
+    fn fmt(&self, f: &mut fmt::Formatter) -> Res<(), fmt::Error> {
+        match self {
+            Config::Single(single) => f.write_fmt(format_args!("{}", single)),
+            Config::Map(map) => {
+                for (key, val) in map {
+                    f.write_fmt(format_args!("{}: {}", key, val))?;
+                }
+
+                Ok(())
+            }
+        }
+    }
 }
 
 impl Config {
@@ -345,6 +377,12 @@ impl Config {
         *self = merged;
 
         Ok(())
+    }
+}
+
+impl fmt::Display for ConfigValue {
+    fn fmt(&self, f: &mut fmt::Formatter) -> Res<(), fmt::Error> {
+        f.write_str(&self.0)
     }
 }
 
@@ -713,10 +751,4 @@ pub fn init(file: &PathBuf, name: &Option<String>) -> Result<()> {
     }
 
     Ok(())
-}
-
-impl fmt::Display for ConfigSearch {
-    fn fmt(&self, f: &mut fmt::Formatter) -> Res<(), fmt::Error> {
-        f.write_str("example")
-    }
 }
