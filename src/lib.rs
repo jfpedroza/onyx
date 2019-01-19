@@ -1,3 +1,5 @@
+#![feature(transpose_result)]
+
 extern crate failure;
 extern crate promptly;
 extern crate quicli;
@@ -45,7 +47,7 @@ pub fn process(args: &CliArgs) -> Result<()> {
         } => {
             let project = load()?;
             let result = project.get_config(app, key, sub_key)?;
-            println!("Result: {}", result);
+            println!("{}", result);
         }
     }
 

@@ -135,16 +135,14 @@ enum ProjectError {
     },
 
     #[fail(display = "Config key '{}' not found", key)]
-    ConfigKeyNotFound {
-        key: String
-    },
+    ConfigKeyNotFound { key: String },
 
-    #[fail(display = "Config key/sub_key '{}, {}' not found", key, sub_key)]
-    ConfigKeySubKeyNotFound {
-        key: String,
-
-        sub_key: String,
-    }
+    #[fail(
+        display = "Config key/sub_key '{}, {}' not found",
+        key,
+        sub_key
+    )]
+    ConfigKeySubKeyNotFound { key: String, sub_key: String },
 }
 
 impl Project {
@@ -259,16 +257,30 @@ impl Project {
 
     pub fn get_config(
         &self,
-        app: &Option<String>,
+        app_name: &Option<String>,
         key: &String,
         sub_key: &Option<String>,
     ) -> Result<Config> {
-        if app.is_some() && self.umbrella {
-            Ok(Config::Single(ConfigValue::from("")))
+        if app_name.is_some() && self.umbrella {
+            if let Some(ref apps) = self.apps {
+                if let Some(ref app) = apps.get(app_name.as_ref().unwrap()) {
+                    match app.get(key, sub_key).transpose()? {
+                        Some(config) => Ok(config),
+                        None => match self.app.get(key, sub_key).transpose()? {
+                            Some(config) => Ok(config),
+                            None => bail!(ProjectError::from_key_sub_key(key, sub_key)),
+                        },
+                    }
+                } else {
+                    bail!(ProjectError::from_key_sub_key(key, sub_key))
+                }
+            } else {
+                bail!(ProjectError::from_key_sub_key(key, sub_key))
+            }
         } else {
-            match self.app.get(key, sub_key)? {
+            match self.app.get(key, sub_key).transpose()? {
                 Some(config) => Ok(config),
-                None => bail!("")
+                None => bail!(ProjectError::from_key_sub_key(key, sub_key)),
             }
         }
     }
@@ -324,8 +336,26 @@ impl Application {
         Ok(())
     }
 
-    fn get(&self, key: &str, sub_key: &Option<String>) -> Result<Option<Config>> {
-        Ok(None)
+    fn get(&self, key: &str, sub_key: &Option<String>) -> Option<Result<Config>> {
+        self.config
+            .as_ref()
+            .and_then(|config| config.get(key))
+            .and_then(|res| {
+                if let Some(sub_key) = sub_key {
+                    match res {
+                        Config::Map(map) => {
+                            map.get(sub_key).map(|val| Ok(Config::Single(val.clone())))
+                        }
+                        Config::Single(_) => Some(Err(failure::err_msg(
+                            ProjectError::IncompatibleConfigType {
+                                key: key.to_string(),
+                            },
+                        ))),
+                    }
+                } else {
+                    Some(Ok(res.clone()))
+                }
+            })
     }
 }
 
@@ -335,7 +365,7 @@ impl fmt::Display for Config {
             Config::Single(single) => f.write_fmt(format_args!("{}", single)),
             Config::Map(map) => {
                 for (key, val) in map {
-                    f.write_fmt(format_args!("{}: {}", key, val))?;
+                    f.write_fmt(format_args!("{}: {}\n", key, val))?;
                 }
 
                 Ok(())
@@ -513,8 +543,7 @@ impl Runner {
                     (sign, Ok(arg)) => Ok((sign, arg)),
                     (_sign, Err(error)) => Err(error),
                 }
-            })
-            .collect::<Result<Vec<_>>>()?;
+            }).collect::<Result<Vec<_>>>()?;
 
         let to_add: Vec<_> = processed
             .iter()
@@ -625,6 +654,19 @@ impl<'de> Deserialize<'de> for RunnerEntry {
     }
 }
 
+impl ProjectError {
+    fn from_key_sub_key(key: &String, sub_key: &Option<String>) -> Self {
+        if let Some(sub_key) = sub_key {
+            ProjectError::ConfigKeySubKeyNotFound {
+                key: key.clone(),
+                sub_key: sub_key.clone(),
+            }
+        } else {
+            ProjectError::ConfigKeyNotFound { key: key.clone() }
+        }
+    }
+}
+
 fn validate_file(path: &PathBuf, extension: &str) -> Result<()> {
     use self::ProjectError::*;
 
@@ -711,9 +753,9 @@ pub fn init(file: &PathBuf, name: &Option<String>) -> Result<()> {
         ("pass", "secret"),
         ("db", "db"),
     ]
-    .iter()
-    .map(|(key, val)| (key.to_string(), val.into()))
-    .collect();
+        .iter()
+        .map(|(key, val)| (key.to_string(), val.into()))
+        .collect();
     config.insert("db".to_string(), Config::Map(db));
     project.app.config = Some(config);
 
