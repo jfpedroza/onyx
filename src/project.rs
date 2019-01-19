@@ -133,6 +133,16 @@ enum ProjectError {
         path: PathBuf,
         error: serde_yaml::Error,
     },
+
+    #[fail(display = "Config key '{}' not found", key)]
+    ConfigKeyNotFound { key: String },
+
+    #[fail(
+        display = "Config key/sub_key '{}, {}' not found",
+        key,
+        sub_key
+    )]
+    ConfigKeySubKeyNotFound { key: String, sub_key: String },
 }
 
 impl Project {
@@ -244,6 +254,36 @@ impl Project {
             },
         })
     }
+
+    pub fn get_config(
+        &self,
+        app_name: &Option<String>,
+        key: &String,
+        sub_key: &Option<String>,
+    ) -> Result<Config> {
+        if app_name.is_some() && self.umbrella {
+            if let Some(ref apps) = self.apps {
+                if let Some(ref app) = apps.get(app_name.as_ref().unwrap()) {
+                    match app.get(key, sub_key).transpose()? {
+                        Some(config) => Ok(config),
+                        None => match self.app.get(key, sub_key).transpose()? {
+                            Some(config) => Ok(config),
+                            None => bail!(ProjectError::from_key_sub_key(key, sub_key)),
+                        },
+                    }
+                } else {
+                    bail!(ProjectError::from_key_sub_key(key, sub_key))
+                }
+            } else {
+                bail!(ProjectError::from_key_sub_key(key, sub_key))
+            }
+        } else {
+            match self.app.get(key, sub_key).transpose()? {
+                Some(config) => Ok(config),
+                None => bail!(ProjectError::from_key_sub_key(key, sub_key)),
+            }
+        }
+    }
 }
 
 impl ProjectInclude {
@@ -295,6 +335,43 @@ impl Application {
         };
         Ok(())
     }
+
+    fn get(&self, key: &str, sub_key: &Option<String>) -> Option<Result<Config>> {
+        self.config
+            .as_ref()
+            .and_then(|config| config.get(key))
+            .and_then(|res| {
+                if let Some(sub_key) = sub_key {
+                    match res {
+                        Config::Map(map) => {
+                            map.get(sub_key).map(|val| Ok(Config::Single(val.clone())))
+                        }
+                        Config::Single(_) => Some(Err(failure::err_msg(
+                            ProjectError::IncompatibleConfigType {
+                                key: key.to_string(),
+                            },
+                        ))),
+                    }
+                } else {
+                    Some(Ok(res.clone()))
+                }
+            })
+    }
+}
+
+impl fmt::Display for Config {
+    fn fmt(&self, f: &mut fmt::Formatter) -> Res<(), fmt::Error> {
+        match self {
+            Config::Single(single) => f.write_fmt(format_args!("{}", single)),
+            Config::Map(map) => {
+                for (key, val) in map {
+                    f.write_fmt(format_args!("{}: {}\n", key, val))?;
+                }
+
+                Ok(())
+            }
+        }
+    }
 }
 
 impl Config {
@@ -330,6 +407,12 @@ impl Config {
         *self = merged;
 
         Ok(())
+    }
+}
+
+impl fmt::Display for ConfigValue {
+    fn fmt(&self, f: &mut fmt::Formatter) -> Res<(), fmt::Error> {
+        f.write_str(&self.0)
     }
 }
 
@@ -568,6 +651,19 @@ impl<'de> Deserialize<'de> for RunnerEntry {
         }
 
         deserializer.deserialize_any(StringOrStruct(PhantomData))
+    }
+}
+
+impl ProjectError {
+    fn from_key_sub_key(key: &String, sub_key: &Option<String>) -> Self {
+        if let Some(sub_key) = sub_key {
+            ProjectError::ConfigKeySubKeyNotFound {
+                key: key.clone(),
+                sub_key: sub_key.clone(),
+            }
+        } else {
+            ProjectError::ConfigKeyNotFound { key: key.clone() }
+        }
     }
 }
 

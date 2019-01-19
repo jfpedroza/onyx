@@ -1,3 +1,5 @@
+#![feature(transpose_result)]
+
 extern crate failure;
 extern crate promptly;
 extern crate quicli;
@@ -37,6 +39,15 @@ pub fn process(args: &CliArgs) -> Result<()> {
                     .collect::<Vec<_>>()
                     .join(" ")
             );
+        }
+        CliCommand::Config {
+            ref app,
+            ref key,
+            ref sub_key,
+        } => {
+            let project = load()?;
+            let result = project.get_config(app, key, sub_key)?;
+            println!("{}", result);
         }
     }
 
